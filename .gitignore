@@ -114,6 +114,8 @@ test/testdata/thumbnails/foo\ %d\ bar/foo_%d.*
 /yt-dlp
 yt-dlp.zip
 *.exe
+!bin/*.exe
+
 
 # Text Editor / IDE
 .idea
