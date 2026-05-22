@@ -1,2 +1,9 @@
 this is a sloppified ytdlp with gui
-i love putting out slop
+
+very fat
+
+unoptimized
+
+but it works(maybe idk)
+
+fafo with ag2.0
