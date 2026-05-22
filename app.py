@@ -6,16 +6,8 @@ import yt_dlp
 import threading
 import time
 
-# 全域執行緒安全下載狀態快取，且只在未宣告時初始化
-if 'DOWNLOAD_STATE' not in globals():
-    globals()['DOWNLOAD_STATE'] = {
-        'progress': 0.0,
-        'info_text': "⏳ 正在啟動 yt-dlp 下載引擎...",
-        'cancel_download': False,
-        'status': 'idle',  # 'idle', 'running', 'success', 'failed', 'cancelled'
-        'error_message': ''
-    }
-DOWNLOAD_STATE = globals()['DOWNLOAD_STATE']
+
+
 
 # Set Page Config
 st.set_page_config(
@@ -171,43 +163,44 @@ def clean_youtube_url(url):
         pass
     return url
 
-def streamlit_progress_hook(d):
-    global DOWNLOAD_STATE
-    if DOWNLOAD_STATE['cancel_download']:
-        raise Exception("USER_CANCELLED")
-        
-    if d['status'] == 'downloading':
-        downloaded = d.get('downloaded_bytes', 0)
-        total = d.get('total_bytes') or d.get('total_bytes_estimate') or 0
-        
-        if total > 0:
-            percentage = downloaded / total
-            percentage = max(0.0, min(1.0, percentage))
-        else:
-            percentage = 0.0
+def make_progress_hook(state_ref):
+    def progress_hook(d):
+        if state_ref.get('cancel_download'):
+            raise Exception("USER_CANCELLED")
             
-        downloaded_mb = downloaded / (1024 * 1024)
-        total_mb = total / (1024 * 1024) if total > 0 else 0
-        
-        speed = d.get('speed')
-        speed_mb = speed / (1024 * 1024) if speed else 0
-        
-        eta = d.get('eta')
-        eta_str = f"{eta} 秒" if eta is not None else "計算中..."
-        speed_str = f"{speed_mb:.2f} MB/秒" if speed_mb > 0 else "計算中..."
-        
-        filename = os.path.basename(d.get('filename', '檔案'))
-        
-        DOWNLOAD_STATE['progress'] = percentage
-        DOWNLOAD_STATE['info_text'] = (
-            f"📥 **正下載檔案**: `{filename}`\n\n"
-            f"📊 **進度**: {percentage*100:.1f}% ({downloaded_mb:.1f} MB / {total_mb:.1f} MB)\n\n"
-            f"⚡ **下載速度**: {speed_str} | ⏳ **預估剩餘時間**: {eta_str}"
-        )
-        
-    elif d['status'] == 'finished':
-        DOWNLOAD_STATE['progress'] = 1.0
-        DOWNLOAD_STATE['info_text'] = "🎉 **檔案下載完成！** 正在進行轉檔或收尾處理中..."
+        if d['status'] == 'downloading':
+            downloaded = d.get('downloaded_bytes', 0)
+            total = d.get('total_bytes') or d.get('total_bytes_estimate') or 0
+            
+            if total > 0:
+                percentage = downloaded / total
+                percentage = max(0.0, min(1.0, percentage))
+            else:
+                percentage = 0.0
+                
+            downloaded_mb = downloaded / (1024 * 1024)
+            total_mb = total / (1024 * 1024) if total > 0 else 0
+            
+            speed = d.get('speed')
+            speed_mb = speed / (1024 * 1024) if speed else 0
+            
+            eta = d.get('eta')
+            eta_str = f"{eta} 秒" if eta is not None else "計算中..."
+            speed_str = f"{speed_mb:.2f} MB/秒" if speed_mb > 0 else "計算中..."
+            
+            filename = os.path.basename(d.get('filename', '檔案'))
+            
+            state_ref['progress'] = percentage
+            state_ref['info_text'] = (
+                f"📥 **正下載檔案**: `{filename}`\n\n"
+                f"📊 **進度**: {percentage*100:.1f}% ({downloaded_mb:.1f} MB / {total_mb:.1f} MB)\n\n"
+                f"⚡ **下載速度**: {speed_str} | ⏳ **預估剩餘時間**: {eta_str}"
+            )
+            
+        elif d['status'] == 'finished':
+            state_ref['progress'] = 1.0
+            state_ref['info_text'] = "🎉 **檔案下載完成！** 正在進行轉檔或收尾處理中..."
+    return progress_hook
 
 def get_ffmpeg_dir():
     # If running inside PyInstaller bundle
@@ -250,6 +243,18 @@ if 'download_success' not in st.session_state:
     st.session_state.download_success = False
 if 'url_input' not in st.session_state:
     st.session_state.url_input = ""
+if 'download_state' not in st.session_state:
+    st.session_state.download_state = {
+        'progress': 0.0,
+        'info_text': "⏳ 正在啟動 yt-dlp 下載引擎...",
+        'cancel_download': False,
+        'status': 'idle',  # 'idle', 'running', 'success', 'failed', 'cancelled'
+        'error_message': ''
+    }
+if 'add_index_prefix' not in st.session_state:
+    st.session_state.add_index_prefix = True
+
+
 
 
 # --- 4. Sidebar: Settings & Accounts ---
@@ -322,6 +327,10 @@ if not st.session_state.confirm_screen and not st.session_state.downloading:
         # Verify download directory
         if not os.path.exists(download_dir):
             st.caption("⚠️ 資料夾目前不存在，下載時將會自動為您建立。")
+            
+        # 自動前綴選項
+        add_index_prefix = st.checkbox("自動為播放清單加上序號前綴 (如 01_檔名)", value=st.session_state.add_index_prefix)
+        st.session_state.add_index_prefix = add_index_prefix
     
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -496,37 +505,46 @@ elif st.session_state.downloading:
     st.markdown('<div class="glass-card">', unsafe_allow_html=True)
     st.subheader("📥 正在為您下載影音，請勿關閉網頁...")
     
+    state_ref = st.session_state.download_state
+    
     # 渲染進度容器
-    progress_bar = st.progress(DOWNLOAD_STATE['progress'])
+    progress_bar = st.progress(state_ref['progress'])
     info_box = st.empty()
     
     # 顯示目前進度
-    if DOWNLOAD_STATE['cancel_download']:
+    if state_ref['cancel_download']:
         info_box.warning("⏳ 正在要求終止下載，請稍候...")
     else:
-        info_box.info(DOWNLOAD_STATE['info_text'])
+        info_box.info(state_ref['info_text'])
         
     # 如果還在下載中，顯示終止下載按鈕
-    if DOWNLOAD_STATE['status'] == 'running':
+    if state_ref['status'] == 'running':
         st.markdown('<div class="cancel-container">', unsafe_allow_html=True)
         stop_btn = st.button("🛑 終止下載", key="stop_live_download_btn", use_container_width=True)
         st.markdown('</div>', unsafe_allow_html=True)
         if stop_btn:
-            DOWNLOAD_STATE['cancel_download'] = True
+            state_ref['cancel_download'] = True
             info_box.warning("⏳ 正在要求終止下載，請稍候...")
             st.rerun()
 
     # 啟動下載背景執行緒的邏輯
-    if DOWNLOAD_STATE['status'] == 'idle':
-        DOWNLOAD_STATE['status'] = 'running'
-        DOWNLOAD_STATE['progress'] = 0.0
-        DOWNLOAD_STATE['info_text'] = "⏳ 正在啟動 yt-dlp 下載引擎..."
-        DOWNLOAD_STATE['cancel_download'] = False
-        DOWNLOAD_STATE['error_message'] = ""
+    if state_ref['status'] == 'idle':
+        state_ref['status'] = 'running'
+        state_ref['progress'] = 0.0
+        state_ref['info_text'] = "⏳ 正在啟動 yt-dlp 下載引擎..."
+        state_ref['cancel_download'] = False
+        state_ref['error_message'] = ""
         
+        # 判斷是否為播放清單，以決定是否加上序號前綴
+        is_playlist = st.session_state.analyzed_info.get('_type') == 'playlist' if st.session_state.analyzed_info else False
+        if st.session_state.add_index_prefix and is_playlist:
+            filename_format = '%(playlist_index)02d_%(title)s.%(ext)s'
+        else:
+            filename_format = '%(title)s.%(ext)s'
+            
         # 準備下載用的配置選項與 cookies 暫存
         ydl_opts = {
-            'outtmpl': os.path.join(st.session_state.download_path, '%(title)s.%(ext)s'),
+            'outtmpl': os.path.join(st.session_state.download_path, filename_format),
             'quiet': True,
             'no_warnings': True,
             'noplaylist': False,
@@ -563,32 +581,31 @@ elif st.session_state.downloading:
             except:
                 pass
 
-        ydl_opts['progress_hooks'] = [streamlit_progress_hook]
+        ydl_opts['progress_hooks'] = [make_progress_hook(state_ref)]
 
         # 建立目標資料夾
         if not os.path.exists(st.session_state.download_path):
             try:
                 os.makedirs(st.session_state.download_path, exist_ok=True)
             except Exception as e:
-                DOWNLOAD_STATE['status'] = 'failed'
-                DOWNLOAD_STATE['error_message'] = f"無法建立儲存資料夾: {str(e)}"
+                state_ref['status'] = 'failed'
+                state_ref['error_message'] = f"無法建立儲存資料夾: {str(e)}"
                 st.rerun()
 
         # 定義背景執行緒的函數
-        def bg_download_thread_func(opts, url_input, cookie_path):
-            global DOWNLOAD_STATE
+        def bg_download_thread_func(opts, url_input, cookie_path, s_ref):
             try:
                 url_to_download = clean_youtube_url(url_input)
                 with yt_dlp.YoutubeDL(opts) as ydl:
                     ydl.download([url_to_download])
-                DOWNLOAD_STATE['status'] = 'success'
+                s_ref['status'] = 'success'
             except Exception as e:
                 err_str = str(e)
-                if "USER_CANCELLED" in err_str or DOWNLOAD_STATE['cancel_download']:
-                    DOWNLOAD_STATE['status'] = 'cancelled'
+                if "USER_CANCELLED" in err_str or s_ref.get('cancel_download'):
+                    s_ref['status'] = 'cancelled'
                 else:
-                    DOWNLOAD_STATE['status'] = 'failed'
-                    DOWNLOAD_STATE['error_message'] = err_str
+                    s_ref['status'] = 'failed'
+                    s_ref['error_message'] = err_str
             finally:
                 # 清理暫存 cookie 檔
                 if cookie_path and os.path.exists(cookie_path):
@@ -600,45 +617,45 @@ elif st.session_state.downloading:
         # 啟動背景執行緒
         thread = threading.Thread(
             target=bg_download_thread_func,
-            args=(ydl_opts, st.session_state.url_input, temp_cookie_path),
+            args=(ydl_opts, st.session_state.url_input, temp_cookie_path, state_ref),
             daemon=True
         )
         thread.start()
         st.rerun()
 
     # 處理不同的狀態
-    if DOWNLOAD_STATE['status'] == 'running':
+    if state_ref['status'] == 'running':
         # 如果還在運行中，就 sleep 0.3 秒後主動 rerun，維持進度更新與終止按鈕點擊偵測
         time.sleep(0.3)
         st.rerun()
         
-    elif DOWNLOAD_STATE['status'] == 'success':
+    elif state_ref['status'] == 'success':
         # 成功下載，清理狀態並跳轉
-        DOWNLOAD_STATE['status'] = 'idle'
+        state_ref['status'] = 'idle'
         st.session_state.download_success = True
         st.session_state.downloading = False
         st.session_state.confirm_screen = False
         st.session_state.analyzed_info = None
         st.rerun()
         
-    elif DOWNLOAD_STATE['status'] == 'cancelled':
+    elif state_ref['status'] == 'cancelled':
         # 取消下載的 UI
         st.warning("⚠️ **下載已手動終止**")
         st.write("已成功取消本次的影音下載任務，未完成的暫存檔案也已被清理。")
         return_btn = st.button("返回主頁面", key="return_home_cancelled")
         if return_btn:
-            DOWNLOAD_STATE['status'] = 'idle'
+            state_ref['status'] = 'idle'
             st.session_state.downloading = False
             st.session_state.confirm_screen = False
             st.session_state.analyzed_info = None
             st.rerun()
             
-    elif DOWNLOAD_STATE['status'] == 'failed':
+    elif state_ref['status'] == 'failed':
         # 失敗的 UI
-        st.error(f"❌ **下載失敗**\n\n發生了以下錯誤：\n`{DOWNLOAD_STATE['error_message']}`")
+        st.error(f"❌ **下載失敗**\n\n發生了以下錯誤：\n`{state_ref['error_message']}`")
         return_btn = st.button("返回主頁面", key="return_home_failed")
         if return_btn:
-            DOWNLOAD_STATE['status'] = 'idle'
+            state_ref['status'] = 'idle'
             st.session_state.downloading = False
             st.session_state.confirm_screen = False
             st.session_state.analyzed_info = None
