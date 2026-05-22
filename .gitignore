@@ -76,6 +76,9 @@ tmp/
 venv/
 .venv/
 completions/
+hooks/
+run_gui.py
+yt-dlp-gui.zip
 
 # Misc
 *~
